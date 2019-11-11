@@ -1,4 +1,4 @@
-# CNVA-Development
+Cloud native dev
 ## While committing your code to github, please remove any private keys
 
 ## Steps to run the code on a new machine:
