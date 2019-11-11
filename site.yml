@@ -1,0 +1,19 @@
+---
+- name: CNVA create admin machines on Openstack
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  roles:
+    - role: createKeys
+      cluster_type: cluster_type
+    - role: createNodes
+      cluster_type: cluster_type
+    - role: createDir
+    - role: createELB
+      cluster_type: cluster_type
+      tags: CELB
+    - role: deploy-k8s
+      cluster_type: cluster_type
+#    - { role: deleteELB,
+#        cluster_type: cluster_type,
+#        tags: DELB}

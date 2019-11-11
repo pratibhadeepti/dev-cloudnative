@@ -1,0 +1,256 @@
+---
+
+- name: Register number of instances
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        i=1
+        while [ $i -le "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}" ]; do
+            echo $i
+            i=$(($i+1))
+        done
+    elif [ {{ ktype }} == "Sub" ]; then
+        i=1
+        while [ $i -le "{{ lookup('env','SUB_INSTANCE_VALUE') }}" ]; do
+            echo $i
+            i=$(($i+1))
+        done
+    fi
+  args:
+    executable: /bin/bash
+  register: servers
+
+- name: Check for key type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_KEY_NAME') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','CUST_KEY_NAME') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: key
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+
+- name: Check for flavour type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','OS_FLAVOR_NAME_CUST_MASTER') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','OS_FLAVOR_NAME_CUST_WORKER') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: flavour
+
+- name: Launch admin instances
+  os_server:
+    image: "{{ lookup('env','OS_IMAGE_ID') }}"
+    name: "{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}-{{ item[0] }}-{{ item[1] }}"
+    key_name: "{{ key.stdout }}"
+    availability_zone: "{{ lookup('env','OS_AZ') | default('eu-de-02') }}"
+    flavor: "{{ lookup('env','OS_FLAVOR_NAME_ADMIN') }}"
+    state: present
+    network: "{{ lookup('env','OS_NETWORK_ID') }}"
+    boot_from_volume: true
+    volume_size: "{{ lookup('env','VOLUME_SIZE_ADMIN') }}"
+    auto_ip: no
+    userdata: |
+      {%- raw -%}#!/bin/bash
+      sed -i 's/PermitRootLogin .*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+      systemctl restart sshd
+      firewall-cmd --add-port 22/tcp
+      firewall-cmd --add-port 25/tcp
+      firewall-cmd --add-port 8080/tcp
+      firewall-cmd --add-port 10248-10249/tcp
+      firewall-cmd --add-port 111/tcp
+      firewall-cmd --add-port 10256/tcp
+      firewall-cmd --add-port 179/tcp
+      firewall-cmd --add-port 27858/tcp
+      firewall-cmd --add-port 9099/tcp
+      firewall-cmd --add-port 2379-2380/tcp
+      firewall-cmd --add-port 6443/tcp
+      firewall-cmd --add-port 9090/tcp
+      firewall-cmd --add-port 9093/tcp
+      firewall-cmd --add-port 9097/tcp
+      firewall-cmd --add-port 9100/tcp
+      firewall-cmd --add-port 6783/tcp
+      firewall-cmd --add-port 10250-10252/tcp
+      firewall-cmd --add-port 30000-32767/tcp
+      sed -i 's/^.* ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys
+      {% endraw %}
+  register: admin
+  when: ktype == "Admin"
+  with_nested:
+  - "{{ type.stdout }}"
+  - "{{ lookup('sequence','start=1 end='+max_num_admin|string,wantlist=True) }}"
+
+- name: Launch customer master instances
+  os_server:
+    image: "{{ lookup('env','OS_IMAGE_ID') }}"
+    name: "{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}-{{ lookup('env','SUB_INSTANCE_SUFFIX') }}{{ item[1] }}-{{ item[0] }}"
+    key_name: "{{ key.stdout }}"
+    availability_zone: "{{ lookup('env','OS_AZ') | default('eu-de-02') }}"
+    flavor: "{{ lookup('env','OS_FLAVOR_NAME_CUST_MASTER') }}"
+    state: present
+    network: "{{ lookup('env','OS_NETWORK_ID') }}"
+    boot_from_volume: true
+    volume_size: "{{ lookup('env','VOLUME_SIZE_CUST_MASTER') }}"
+    auto_ip: no
+    userdata: |
+      {%- raw -%}#!/bin/bash
+      sed -i 's/PermitRootLogin .*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+      systemctl restart sshd
+      firewall-cmd --add-port 22/tcp
+      firewall-cmd --add-port 25/tcp
+      firewall-cmd --add-port 8080/tcp
+      firewall-cmd --add-port 10248-10249/tcp
+      firewall-cmd --add-port 111/tcp
+      firewall-cmd --add-port 10256/tcp
+      firewall-cmd --add-port 179/tcp
+      firewall-cmd --add-port 27858/tcp
+      firewall-cmd --add-port 9099/tcp
+      firewall-cmd --add-port 2379-2380/tcp
+      firewall-cmd --add-port 6443/tcp
+      firewall-cmd --add-port 9090/tcp
+      firewall-cmd --add-port 9093/tcp
+      firewall-cmd --add-port 9097/tcp
+      firewall-cmd --add-port 9100/tcp
+      firewall-cmd --add-port 6783/tcp
+      firewall-cmd --add-port 10250-10252/tcp
+      firewall-cmd --add-port 30000-32767/tcp
+      sed -i 's/^.* ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys
+      {% endraw %}
+  register: customer_master
+  when: ktype == "Sub"
+  with_nested:
+  - "{{ lookup('sequence','start=1 end='+max_num_cust_master|string,wantlist=True) }}"
+  - [ 'master' ]
+
+- name: Launch customer worker instances
+  os_server:
+    image: "{{ lookup('env','OS_IMAGE_ID') }}"
+    name: "{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}-{{ lookup('env','SUB_INSTANCE_SUFFIX') }}{{ item[1] }}-{{ item[0] }}"
+    key_name: "{{ key.stdout }}"
+    availability_zone: "{{ lookup('env','OS_AZ') | default('eu-de-02') }}"
+    flavor: "{{ lookup('env','OS_FLAVOR_NAME_CUST_WORKER') }}"
+    state: present
+    network: "{{ lookup('env','OS_NETWORK_ID') }}"
+    boot_from_volume: true
+    volume_size: "{{ lookup('env','VOLUME_SIZE_CUST_WORKER') }}"
+    auto_ip: no
+    userdata: |
+      {%- raw -%}#!/bin/bash
+      sed -i 's/PermitRootLogin .*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+      systemctl restart sshd
+      firewall-cmd --add-port 22/tcp
+      firewall-cmd --add-port 25/tcp
+      firewall-cmd --add-port 8080/tcp
+      firewall-cmd --add-port 10248-10249/tcp
+      firewall-cmd --add-port 111/tcp
+      firewall-cmd --add-port 10256/tcp
+      firewall-cmd --add-port 179/tcp
+      firewall-cmd --add-port 27858/tcp
+      firewall-cmd --add-port 9099/tcp
+      firewall-cmd --add-port 2379-2380/tcp
+      firewall-cmd --add-port 6443/tcp
+      firewall-cmd --add-port 9090/tcp
+      firewall-cmd --add-port 9093/tcp
+      firewall-cmd --add-port 9097/tcp
+      firewall-cmd --add-port 9100/tcp
+      firewall-cmd --add-port 6783/tcp
+      firewall-cmd --add-port 10250-10252/tcp
+      firewall-cmd --add-port 30000-32767/tcp
+      sed -i 's/^.* ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys
+      {% endraw %}
+  register: customer_worker
+  when: ktype == "Sub"
+  with_nested:
+  - "{{ lookup('sequence','start=1 end='+max_num_cust_worker|string,wantlist=True) }}"
+  - [ 'worker' ]
+
+# Add IP address to INI host file.
+- name: 'Add nodes to admin host file'
+  ini_file:
+    path: "./{{ item[2] }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    section: "{{ item[0] }}"
+    option: "{{ item[1].server.name }}"
+    value: "ansible_host={{ item[1].server.private_v4 }}"
+  when: ktype == "Admin"
+  with_nested:
+    - [ 'all', 'kube-master', 'etcd', 'kube-node' ]
+    - "{{ admin.results }}"
+    - "{{ type.stdout }}"
+
+- name: 'Add nodes to customer host file'
+  ini_file:
+    path: "./{{ item[2] }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    section: "{{ item[0] }}"
+    option: "{{ item[1].server.name }}"
+    value: "ansible_host={{ item[1].server.private_v4 }}"
+  when: ktype == "Sub"
+  with_nested:
+    - [ 'all', 'kube-master', 'etcd' ]
+    - "{{ customer_master.results }}"
+    - "{{ type.stdout }}"
+
+- name: 'Add nodes to customer host file'
+  ini_file:
+    path: "./{{ item[2] }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    section: "{{ item[0] }}"
+    option: "{{ item[1].server.name }}"
+    value: "ansible_host={{ item[1].server.private_v4 }}"
+  when: ktype == "Sub"
+  with_nested:
+    - [ 'all', 'kube-node' ]
+    - "{{ customer_worker.results }}"
+    - "{{ type.stdout }}"
+
+
+- name: 'Add dependency to inventory'
+  ini_file:
+    path: "./{{ item[1] }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    section: "k8s-cluster:children"
+    option: "{{ item[0] }}"
+    value: ""
+  with_nested:
+    - [ 'kube-master', 'kube-node' ]
+    - "{{ type.stdout }}"
+
+- name: Replace
+  replace:
+    path: "./{{ item }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    regexp: ' = '
+    replace: ' '
+  with_items:
+    - "{{ type.stdout }}"
+
+- name: Wait for admin servers to come online
+  wait_for:
+    host: "{{ item.server.private_v4 }}"
+    port: 22
+    timeout: 400
+    state: started
+  when: ktype == "Admin"
+  with_items:
+    -  "{{ admin.results }}"
+
+- name: Wait for customer servers to come online
+  wait_for:
+    host: "{{ item.server.private_v4 }}"
+    port: 22
+    timeout: 400
+    state: started
+  when: ktype == "Sub"
+  with_items:
+    -  "{{ customer_master.results }}"
+    -  "{{ customer_worker.results }}"

@@ -1,0 +1,55 @@
+---
+- set_fact:
+         cloud: "{{ lookup('env','K8S_CLUSTER_NAME') }}"
+
+- name: Register number of instances
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_VALUE') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: no_inst
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+
+- name: master ips list
+  shell: grep -A {{no_inst.stdout}}  "\[kube-master\]" ./{{ type.stdout }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini | \
+         awk '{print $2}'|cut -d '=' -f 2 |awk 'NR==2,  NR=="{{no_inst.stdout}}"+1  {print $1}'
+  register: master_ip_list
+- debug: var=master_ip_list.stdout_lines
+
+- set_fact:
+    subnet_id: "{{ lookup('env','SUBNET_ID') }}"
+
+- name: creating listners
+  shell: neutron  lbaas-listener-create --name {{item}}-{{cloud}}-{{ type.stdout }} --loadbalancer {{ cloud }}-{{ type.stdout }} --protocol TCP  --protocol-port {{item}}
+  with_items:
+    - "80"
+    - "443"
+
+- name: creating IP Pools
+  shell: neutron lbaas-pool-create --name {{item}}-{{cloud}}-{{ type.stdout }} --lb-algorithm ROUND_ROBIN --listener {{item}}-{{cloud}}-{{ type.stdout }} --protocol TCP
+  with_items:
+    - "80"
+    - "443"
+
+- name: adding members 
+  shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}} --protocol-port 31100 80-{{cloud}}-{{ type.stdout }}
+  with_items:
+  - "{{master_ip_list.stdout_lines}}"
+
+- shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}} --protocol-port 31200 443-{{cloud}}-{{ type.stdout }}
+  with_items:
+  - "{{master_ip_list.stdout_lines}}"

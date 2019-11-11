@@ -1,0 +1,55 @@
+---
+- set_fact:
+         cloud: "{{ lookup('env','K8S_CLUSTER_NAME') }}"
+
+- name: Register number of instances
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_VALUE') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: no_inst
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+
+- shell: neutron lbaas-loadbalancer-show {{ cloud }}-{{ type.stdout }} --format yaml
+  register: lb_data
+  ignore_errors: yes
+
+- set_fact:
+    lbaas_data: "{{lb_data.stdout| from_yaml}}"
+  ignore_errors: yes
+
+- set_fact:
+      listeners="{{ lbaas_data.listeners | from_yaml}}"
+  ignore_errors: yes
+- set_fact:
+      pools="{{ lbaas_data.pools | from_yaml}}"
+  ignore_errors: yes
+
+- include: delete_pools.yml
+  with_items:
+    - "{{pools}}"
+  loop_control:
+    loop_var: pool
+  ignore_errors: yes
+- shell: neutron lbaas-listener-delete {{item.id}}
+  with_items:
+     - "{{listeners}}"
+  ignore_errors: yes
+
+- shell: neutron lbaas-loadbalancer-delete {{lbaas_data.id}}
+  ignore_errors: yes
+

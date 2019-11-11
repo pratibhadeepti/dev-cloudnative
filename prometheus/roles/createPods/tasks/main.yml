@@ -1,0 +1,14 @@
+---
+# tasks file for createPods
+- name: Transfer docker image to target
+  copy:
+    src: cnva.tar
+    dest: /tmp/cnva.tar
+    owner: linux
+    group: linux
+
+- name: Load docker image
+  shell: sudo docker load -i /tmp/cnva.tar
+
+- name: Create customer cluster
+  shell: sudo docker run -t cnva:v1

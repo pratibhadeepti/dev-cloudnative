@@ -1,0 +1,77 @@
+---
+- set_fact:
+         cloud: "{{ lookup('env','K8S_CLUSTER_NAME') }}"
+
+- name: Register number of instances
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_VALUE') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: no_inst
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+
+- name: master ips list
+  shell: grep -A {{no_inst.stdout}}  "\[kube-master\]" ./{{ type.stdout }}_cluster/{{ type.stdout }}_hosts.ini |
+         awk '{print $2}'|cut -d '=' -f 2 |awk 'NR==2,  NR=="{{no_inst.stdout}}"+1  {print $1}'
+  register: master_ip_list
+
+- debug: var=master_ip_list.stdout_lines
+
+- set_fact:
+    subnet_id: "{{ lookup('env','SUBNET_ID') }}"
+
+- set_fact:
+     nexus_port: "{{ lookup('env','NEXUS_PORT') }}"
+
+- set_fact:
+         prometheus_port: "{{ lookup('env','PROMETHEUS_PORT') }}"
+
+- set_fact:
+         grafana_port: "{{ lookup('env','GRAFANA_PORT') }}"
+
+- name: creating listners
+  shell: neutron  lbaas-listener-create --name {{item}}-{{cloud}}-{{ type.stdout }} --loadbalancer {{ cloud }}-{{ type.stdout }} --protocol HTTP  --protocol-port {{item}}
+  with_items:
+    - "{{nexus_port}}"
+    - "{{prometheus_port}}"
+    - "{{grafana_port}}"
+
+- name: creating IP Pools
+  shell: neutron lbaas-pool-create --name {{item}}-{{cloud}}-{{ type.stdout }} --lb-algorithm ROUND_ROBIN --listener {{item}}-{{cloud}}-{{ type.stdout }} --protocol HTTP
+  with_items:
+    - "{{nexus_port}}"
+    - "{{prometheus_port}}"
+    - "{{grafana_port}}"
+
+- name: adding members 
+  shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}} --protocol-port {{nexus_port}} {{nexus_port}}-{{cloud}}-{{ type.stdout }}
+  with_items:
+  - "{{master_ip_list.stdout_lines}}"
+
+- shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}} --protocol-port {{prometheus_port}} {{prometheus_port}}-{{cloud}}-{{ type.stdout }}
+  with_items:
+  - "{{master_ip_list.stdout_lines}}"
+
+- shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}} --protocol-port {{grafana_port}} {{grafana_port}}-{{cloud}}-{{ type.stdout }}
+  with_items:
+  - "{{master_ip_list.stdout_lines}}"
+
+- name: creating health checks for {{grafana_port}}
+  shell: neutron lbaas-healthmonitor-create --delay 5 --max-retries 2 --timeout 10 --type HTTP --pool {{grafana_port}}-{{cloud}}-{{ type.stdout }}
+
+- name: creating health checks for {{prometheus_port}}
+  shell: neutron lbaas-healthmonitor-create --delay 5 --max-retries 2 --timeout 10 --type HTTP --url-path /graph --pool {{prometheus_port}}-{{cloud}}-{{ type.stdout }}

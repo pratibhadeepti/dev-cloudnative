@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jiralert
+  namespace: default
+  labels:
+    app: jiralert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jiralert
+  template:
+    metadata:
+      labels:
+        app: jiralert
+    spec:
+      containers:
+      - name: jiralert
+        image: jiralert:latest
+        imagePullPolicy: Never
+        resources:
+          limits:
+            cpu: 1000m
+          requests:
+            cpu: 100m
+        ports:
+          - containerPort: 9097

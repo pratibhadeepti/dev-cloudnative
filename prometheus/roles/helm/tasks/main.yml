@@ -1,0 +1,21 @@
+---
+- name: download helm
+  unarchive: 
+    src: "{{ helm_url }}"
+    dest: /home/linux
+    copy: no
+  
+- name: copy helm binary
+  copy:
+    src: /home/linux/linux-amd64/helm
+    dest: /usr/bin
+    mode: 0755
+    remote_src: yes
+
+- name: create kubectl soft link
+  file:
+    src: "/usr/local/bin/kubectl"
+    dest: "/usr/bin/kubectl"
+    state: link
+
+

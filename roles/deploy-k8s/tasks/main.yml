@@ -1,0 +1,128 @@
+# Deploy Kubernetes on Admin and sub clusters
+
+- name: Configure cloudprovider
+  replace:
+    path: "./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/group_vars/all.yml"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.line }}"
+  with_items:
+    - {
+       regexp: '#cloud_provider:',
+       line: 'cloud_provider: openstack'
+      }
+    - {
+       regexp: '#loadbalancer_apiserver_localhost: true',
+       line: 'loadbalancer_apiserver_localhost: true'
+      }
+  become: true
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: server
+
+- name: copy inventory file
+  copy:
+    src: "./{{ item }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini"
+    dest: "./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item }}_hosts.ini"
+  with_items:
+    - "{{ server.stdout }}"
+
+- name: Check if ansible config file exists
+  stat:
+    path: /etc/ansible/ansible.cfg
+  register: stat_result
+
+- name: Create config file if it doesn't exist
+  file:
+    path: /etc/ansible/ansible.cfg
+    state: touch
+  when: stat_result.stat.exists == False
+  become: true
+
+- name: Check for key type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_KEY_NAME') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','CUST_KEY_NAME') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: key
+
+- name: Disable Host key checking
+  lineinfile:
+    path: /etc/ansible/ansible.cfg
+    line: "{{ item.line }}"
+  with_items:
+    - { line: '[defaults]' }
+    - { line: 'host_key_checking = False' }
+  become: true
+
+- name: Deploy K8s
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./kubespray/cluster.yml"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: create docker image
+  shell: |
+    #!/bin/bash
+    sudo docker rmi `sudo docker images | grep none | awk '{print $3}'`
+    sudo docker rmi cnva
+    sudo docker build -f Dockerfile -t cnva .
+  when: ktype == "Admin"
+
+- name: create archives
+  shell: sudo docker save -o ./K8/files/cnva.tar cnva; sudo chown linux:linux ./K8/files/cnva.tar
+  when: ktype == "Admin"
+
+- name: Implement monitoring
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./prometheus/monitor.yml"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Implement alerting
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./alerting/alert.yml"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Implement autoscaling
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./autoscaling/autoscale.yml --extra-vars ktype={{ ktype }}"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Implementing Nginx-ingress
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./K8/infra/helm-ngninx-ingress.yml  --extra-vars ktype={{ktype}}"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Creating Storageclass
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./K8/infra/storageclass.yml"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Implementing EFK Logging
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./K8/infra/efk.yaml"
+  with_nested:
+    - "{{ key.stdout }}"
+    - "{{ server.stdout }}"
+
+- name: Copy Image
+  shell: "ansible-playbook -i ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ item[1] }}_hosts.ini -s --private-key ./ssh/{{ item[0] }} --flush-cache ./K8/copyimage.yml"
+  when: ktype == "Admin"
+  with_nested:
+  - "{{ key.stdout }}"
+  - "{{ server.stdout }}"

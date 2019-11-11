@@ -1,0 +1,57 @@
+---
+- name: Implement monitoring on cluster
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: "create directory"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: 0755
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+      with_items:
+        - "/opt/cnva/"
+        - "/opt/cnva/files"
+        - "/opt/cnva/web"
+        - "/opt/cnva/infra"
+        - "/opt/cnva/web/volumes/kube/hosts"
+        - "/opt/cnva/web/volumes/kube/inventory"
+        - "/opt/cnva/web/volumes/kube/logs"
+        - "/opt/cnva/web/volumes/kube/ssh"
+        - "/opt/cnva/web/volumes/customer-cluster"
+        - "/opt/cnva/web/volumes/ui"
+        - "/opt/cnva/web/volumes/proxy"
+        - "/opt/cnva/web/volumes/keycloak"
+        - "/opt/cnva/web/volumes/db"
+        - "/opt/cnva/web/volumes/consul"
+        - "/etc/kubernetes"
+        - "/opt/cnva/web/cnvaweb/proxy"
+        - "/opt/cnva/web/cnvaweb/customercluster"
+        - "/opt/cnva/web/cnvaweb/ui"
+        - "{{ ansible_env.HOME }}"
+
+    - name: create helm soft link
+      file:
+       src: "/usr/local/bin/helm"
+       dest: "/usr/bin/helm"
+       state: link
+      ignore_errors: true
+
+    - name: create kubectl soft link
+      file:
+       src: "/usr/local/bin/kubectl"
+       dest: "/usr/bin/kubectl"
+       state: link
+      ignore_errors: true
+
+    - name: Copy helm charts to target
+      copy:
+       src: helmrepo.tar
+       dest: "{{ ansible_env.HOME }}"
+       mode: 0775
+       directory_mode: yes
+
+- hosts: kube-master[0]
+  roles:
+    - role: monitoring

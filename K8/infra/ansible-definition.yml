@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ansible-svc
+  namespace: cnva
+  labels:
+    app: ansible
+spec:
+  ports:
+    - port: 2222
+      name: webport
+      protocol: TCP
+  selector:
+    app: ansible
+    tier: backend
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible
+  namespace: cnva
+  labels:
+    app: ansible
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ansible
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: ansible
+        tier: backend
+    spec:
+      containers:
+      - image: cnva
+        name: ansible
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 22
+          name: webport
+        volumeMounts:
+        - mountPath: /home/inventory
+          name: hosts
+        - mountPath: /home/ssh
+          name: ssh
+        - mountPath: /home/cloud_cluster
+          name: hostsfile
+        - mountPath: /home/build_logs
+          name: buildlog
+      volumes:
+      - name: hosts
+        hostPath:
+          path: /opt/cnva/web/volumes/kube/inventory
+          type: Directory
+      - name: ssh
+        hostPath:
+          path: /opt/cnva/web/volumes/kube/ssh
+          type: Directory
+      - name: hostsfile
+        hostPath:
+          path: /opt/cnva/web/volumes/kube/hosts
+          type: Directory
+      - name: buildlog
+        hostPath:
+          path: /opt/cnva/web/volumes/kube/logs
+          type: Directory

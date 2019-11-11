@@ -1,0 +1,25 @@
+--- 
+- gather_facts: false
+  hosts: "kube-master[0]"
+  tasks:
+    - name: "create directory"
+      file:
+        path: /opt/cnva/infra/efk
+        state: directory
+        mode: 0644
+
+    - name: Create Storageclass manifest
+      copy:
+        dest: /opt/cnva/infra/efk/storageclass-ssd.yaml
+        content: |
+          kind: StorageClass
+          apiVersion: storage.k8s.io/v1
+          metadata:
+            name: ssd
+          provisioner: kubernetes.io/cinder
+          parameters:
+            type: {{ lookup('env','OS_STORAGECLASS') }}
+            availability: {{ lookup('env','OS_AZ') }}
+
+    - name: Create Storageclass 'ssd'
+      shell: '/usr/local/bin/kubectl apply -f /opt/cnva/infra/efk/storageclass-ssd.yaml'

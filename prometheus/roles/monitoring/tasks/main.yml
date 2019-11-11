@@ -1,0 +1,56 @@
+---
+- set_fact:
+    homevar: "{{ ansible_env.HOME }}"
+    uservar: "{{ ansible_env.USER }}"
+
+- name: create service account
+  shell: kubectl -n kube-system create sa tiller
+  register: result
+  changed_when: "'created' in result.stdout"
+  failed_when: "result.rc != 0 and 'already exists' not in result.stderr"
+
+- name: change permissions for service account to manage the cluster
+  shell: kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
+  register: result
+  changed_when: "'created' in result.stdout"
+  failed_when: "result.rc != 0 and 'already exists' not in result.stderr"
+
+- name: upgrade tiller
+  shell: helm init --service-account tiller --upgrade
+
+- name: initialize helm
+  shell: helm init
+
+- name: wait for tiller pod
+  pause:
+    seconds: 30
+
+- name: Install prometheus operator
+  shell: |
+    tar -xvzf {{ ansible_env.HOME }}/helmrepo.tar -C {{ ansible_env.HOME }}
+    helm install {{ ansible_env.HOME }}/helmrepo/prometheus-operator/ --name prometheus-operator
+    helm install {{ ansible_env.HOME }}/helmrepo/kube-prometheus/ --name kube-prometheus
+
+- name: Copy prometheus service configuration 
+  copy:
+    src: prometheus-service.yml
+    dest: "{{ ansible_env.HOME }}"
+    owner: "{{ ansible_env.USER }}"
+    group: "{{ ansible_env.USER }}"
+    mode: 0755
+
+- name: Copy grafana service configuration
+  copy:
+    src: grafana-service.yml
+    dest: "{{ ansible_env.HOME }}"
+    owner: "{{ ansible_env.USER }}"
+    group: "{{ ansible_env.USER }}"
+    mode: 0755
+
+- name: Create Kubernetes prometheus service
+  shell: kubectl create -f {{ ansible_env.HOME }}/prometheus-service.yml 
+
+- name: Create Kubernetes grafana service
+  shell: kubectl create -f {{ ansible_env.HOME }}/grafana-service.yml
+
+

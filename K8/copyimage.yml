@@ -1,0 +1,96 @@
+---
+
+- name: Transfer file to target machines
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Transfer files
+      copy:
+        src: cnva.tar
+        dest: /tmp/cnva.tar
+        mode: 0755
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+
+    - name: Transfer files
+      copy:
+        src: infra/ansible-definition.yml
+        dest: /opt/cnva/infra/ansible-definition.yml
+        mode: 0755
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+
+    - name: Transfer files
+      copy:
+        src:  ../inventory/env_otc.sh
+        dest: /opt/cnva/web/volumes/kube/inventory/env_otc.sh
+        mode: 0755
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+
+
+    - name: Copy scripts to create users
+      copy:
+        src: "{{ item }}"
+        dest: /opt/cnva/infra/
+        mode: 0755
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+      with_items:
+        - "infra/create-cluster.sh"
+        - "infra/create-user.sh"
+        - "infra/user-access.sh"
+
+- name: Check for ansible pods
+  hosts: kube-master[0]
+  tasks:
+    - name: check ansible pod
+      shell: |
+        #!/bin/bash
+        kubectl get deployments | grep ansible || kubectl get svc | grep ansible
+        test=$?
+        if [ $test -eq 0 ];then
+                kubectl delete -f /opt/cnva/infra/ansible-definition.yml
+        fi
+
+
+- name: Check for images
+  hosts: all
+  tasks:
+    - name: Unzip images
+      shell: |
+        #!/bin/bash
+        sudo docker images | grep cnva
+        key=$?
+        if [ $key -eq 0 ]; then
+                sudo docker rmi cnva; sudo docker load -i /tmp/cnva.tar
+        else
+                sudo docker load -i /tmp/cnva.tar
+        fi
+
+- name: Create K8 pods on target machine
+  hosts: kube-master[0]
+  tasks:
+    - name: create namespace
+      shell: |
+        #!/bin/bash
+        kubectl get namespaces | grep cnva
+        var=$?
+         if [ $var -ne 0 ];
+        then
+        kubectl create namespace cnva
+        fi
+
+    - name: create ansible pod
+      shell: kubectl create -f /opt/cnva/infra/ansible-definition.yml
+
+    - name: create customer cluster
+      shell: |
+        #!/bin/bash
+        pod=`kubectl get pods -n cnva | grep ansible | awk '{print $1}'`
+        kubectl exec -it -n cnva $pod -- bash -c "./entry.sh inventory/env_otc.sh"
+
+    - name: create users
+      shell: |
+        #!/bin/bash
+        /opt/cnva/infra/create-cluster.sh {{ lookup('env','K8S_CLUSTER_NAME') }}

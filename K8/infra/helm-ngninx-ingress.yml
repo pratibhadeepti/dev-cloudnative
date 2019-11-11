@@ -1,0 +1,12 @@
+---
+- hosts: kube-master[0]
+  gather_facts: false
+  tasks:
+    
+    - name: helm install k8s-nginx-ingress 
+      shell: '/usr/local/bin/helm install stable/nginx-ingress --name k8s-nginx-ingress --namespace nginx-ingress --set controller.replicaCount=1,controller.service.type=NodePort --set controller.service.nodePorts.http=31100  --set controller.service.nodePorts.https=31200  --set rbac.create=true --set controller.kind=DaemonSet'
+      when: ktype == 'Admin'
+
+    - name: helm install k8s-nginx-ingress 
+      shell: '/usr/local/bin/helm install stable/nginx-ingress --name k8s-nginx-ingress --namespace nginx-ingress --set controller.replicaCount=1,controller.service.type=LoadBalancer --set rbac.create=true --set controller.kind=DaemonSet'
+      when: ktype == 'Sub'

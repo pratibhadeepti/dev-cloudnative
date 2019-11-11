@@ -1,0 +1,55 @@
+---
+- hosts: localhost
+  tasks:
+    - name: create jira docker image
+      shell: |
+        docker build -f Dockerfile -t jiralert .
+        docker save -o jiralert.tar jiralert:latest; sudo chown {{ ansible_env.USER }}:{{ ansible_env.USER }} jiralert.tar
+        chmod 644 jiralert.tar
+      become: true
+
+- hosts: all
+  tasks:
+    - meta: clear_host_errors
+
+    - name: copy jiralert image
+      copy:
+       src: jiralert.tar
+       dest: /tmp/
+       owner: "{{ ansible_env.USER }}"
+       group: "{{ ansible_env.USER }}"
+       mode: 0600
+    
+    - name: copy jiralert deployment 
+      copy:
+       src: deploy-jira.yaml
+       dest: "{{ ansible_env.HOME }}"
+       mode: 0664
+
+    - name: copy jiralert service
+      copy:
+       src: jiralert-service.yaml
+       dest: "{{ ansible_env.HOME }}" 
+       mode: 0664
+
+    - name: create jiralert image
+      shell: docker load -i /tmp/jiralert.tar
+      become: true
+
+    - name: create kubectl soft link
+      file:
+       src: "/usr/local/bin/kubectl"
+       dest: "/usr/bin/kubectl"
+       state: link
+      ignore_errors: true
+
+- hosts: kube-master[0]
+  gather_facts: false
+  tasks:
+    - meta: clear_host_errors
+
+    - name: Deploy jiralert on kubernetes cluster
+      shell: kubectl create -f {{ ansible_env.HOME }}/deploy-jira.yaml
+
+    - name: Create jiralert service
+      shell: kubectl create -f {{ ansible_env.HOME }}/jiralert-service.yaml

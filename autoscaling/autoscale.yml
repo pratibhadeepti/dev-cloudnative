@@ -1,0 +1,82 @@
+---
+- hosts: localhost
+  tasks:
+    - name: Copy files for image
+      copy:
+        src: "{{ item.path }}"
+        dest: ./
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+        mode: 0644
+      become: true
+      with_items:
+        - { path: "../kubespray" }
+        - { path: "../init_tools.sh" }
+        - { path: "../ssh" }
+        - { path: "../inventory" }
+
+    - name: Create autoscaling image
+      shell: |
+        docker  build -f Dockerfile -t autoscaling:latest .
+        docker save -o autoscaling.tar autoscaling:latest; sudo chown {{ ansible_env.USER }}:{{ ansible_env.USER }} autoscaling.tar
+        chmod 644 autoscaling.tar
+      become: true
+
+- hosts: all
+  tasks:
+    - name: Create data directory
+      file:
+        path: "{{ ansible_env.HOME }}/data"
+        state: directory
+        mode: 0755
+      
+    - name: Transfer files
+      copy:
+        src: autoscaling.tar
+        dest: /tmp/autoscaling.tar
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+      become: true
+
+    - name: Load docker image
+      shell: docker load -i /tmp/autoscaling.tar
+      become: true
+
+    - name: Copy deployment file
+      copy:
+        src: deploy-autoscale.yaml
+        dest: "{{ ansible_env.HOME }}"
+        owner: "{{ ansible_env.USER }}"
+        group: "{{ ansible_env.USER }}"
+
+- hosts: kube-master[0]
+  tasks:
+    - name: Create configmap
+      shell: kubectl create configmap autoscale-map --from-literal=ini=inventory/env_bck.sh --from-literal=type={{ ktype }} --from-literal=user={{ ansible_env.HOME }}
+
+    - name: Deploy Autoscaling
+      shell: kubectl create -f {{ ansible_env.HOME }}/deploy-autoscale.yaml
+
+    - name: Set min value for Pod autoscaling
+      set_fact:
+        minval: "{{ groups['kube-node'] | length }}"
+
+    - name: Set max value for Pod autoscaling
+      set_fact:
+        maxval: "{{ minval|int * 2 }}"
+
+    - name: List deployments
+      shell: kubectl get deployments | awk '{ if (NR!=1) {print $1} }'
+      register: deploy
+
+    - name: Display
+      debug:
+        msg: "{{ item }}"
+      with_items:
+        - "{{ deploy.stdout_lines }}"
+
+    - name: Implement Pod Autoscaling
+      shell: kubectl autoscale deployment {{ item }} --min={{ minval }} --max={{ maxval }} --cpu-percent=80
+      with_items:
+        - "{{ deploy.stdout_lines }}"
+

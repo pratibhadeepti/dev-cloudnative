@@ -1,0 +1,26 @@
+---
+- name: create configuration directory
+  file:
+    path: ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}
+    state: directory
+
+- name: create configuration group_vars directory
+  file:
+    path: ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/group_vars
+    state: directory
+
+- name: copy configuration
+  copy:
+    src: "{{ item.name }}"
+    dest: ./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/group_vars
+    mode: 0775
+  with_items:
+    - { name: './kubespray/inventory/sample/group_vars/all/all.yml' }
+    - { name: './kubespray/inventory/sample/group_vars/k8s-cluster/k8s-cluster.yml' }
+
+- name: Create ansible directory if it doesn't exist
+  file:
+    path: /etc/ansible
+    state: directory
+    mode: 0755
+  become: true

@@ -1,0 +1,3 @@
+---
+# vars file for deploy-k8s
+ktype: "{{cluster_type}}"

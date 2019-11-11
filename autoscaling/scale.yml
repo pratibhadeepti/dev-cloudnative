@@ -1,0 +1,328 @@
+---
+- hosts: localhost
+  gather_facts: true
+  tasks:
+    - name: Check for key type
+      shell: |
+        if [ {{ ktype }} == "Admin" ]; then
+           echo "{{ lookup('env','ADMIN_KEY_NAME') }}"
+        elif [ {{ ktype }} == "Sub" ]; then
+           echo "{{ lookup('env','CUST_KEY_NAME') }}"
+        fi
+      args:
+        executable: /bin/bash
+      register: key
+
+    - name: Change persmissions for key
+      shell: chmod 600 ssh/{{ key.stdout }}
+
+    - name: Check for cluster type
+      shell: |
+        if [ {{ ktype }} == "Admin" ]; then
+           echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+        elif [ {{ ktype }} == "Sub" ]; then
+           echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+        fi
+      args:
+        executable: /bin/bash
+      register: server
+
+    - name: Check for etcd flavour type
+      shell: |
+        if [ {{ ktype }} == "Admin" ]; then
+           echo "{{ lookup('env','OS_FLAVOR_NAME_ADMIN') }}"
+        elif [ {{ ktype }} == "Sub" ]; then
+           echo "{{ lookup('env','OS_FLAVOR_NAME_CUST_MASTER') }}"
+        fi
+      args:
+        executable: /bin/bash
+      register: etcdflavour
+
+    - name: Create ansible directory if it doesn't exist
+      file:
+        path: /etc/ansible
+        state: directory
+        mode: 0755
+      become: true
+
+    - name: Check if ansible config file exists
+      stat:
+        path: /etc/ansible/ansible.cfg
+      register: stat_result
+
+    - name: Create config file if it doesn't exist
+      file:
+        path: /etc/ansible/ansible.cfg
+        state: touch
+        mode: 0755
+      when: stat_result.stat.exists == False
+      become: true
+
+    - name: Disable Host key checking
+      lineinfile:
+        path: /etc/ansible/ansible.cfg
+        line: "{{ item.line }}"
+      with_items:
+        - { line: '[defaults]' }
+        - { line: 'host_key_checking = False' }
+      become: true
+
+    - name:  Fetch status of servers
+      shell: cat data/state.txt
+      register: state
+
+    - name: Set fact
+      set_fact:
+        test: "{{ state.stdout_lines | list | join(',') }}"
+
+    - name: Restart down instances
+      shell: |
+        nova reboot --hard "{{ item.name }}"
+        sleep 30
+      when: item.state == 'down'
+      register: restart
+      with_items:
+        - "{{ test }}"
+
+    - name: list of total nodes
+      set_fact:
+        anode: "{{ anode | default([]) +  [ item ] }}"
+      with_items:
+        - "{{ groups['all'] }}"
+
+    - name: List of available nodes
+      set_fact:
+        node: "{{ node|default([]) + [item.name]}}"
+      with_items:
+        - "{{ test }}"
+
+    - set_fact:
+        down_nodes: "{{ down_nodes|default([]) + [item]}}"
+      when: item not in node
+      with_items:
+        - "{{ groups['all'] }}"
+
+    - set_fact:
+        down_etcd: "{{ down_etcd|default([]) + [item] }}"
+      when: item in groups['etcd'] and down_nodes is defined
+      ignore_errors: true
+      with_items:
+        - "{{ down_nodes }}"
+
+    - set_fact:
+        down_worker: "{{ down_worker|default([]) + [item] }}"
+      when: item not in groups['etcd'] and down_nodes is defined
+      ignore_errors: true
+      with_items:
+        - "{{ down_nodes }}"
+
+    - set_fact:
+        quorum: "{{ groups['etcd'] | length }}"
+        failetcd: "{{ down_etcd | length }}"
+      when: down_etcd is defined
+
+    - name: Install required packages
+      shell: pip install -r kubespray/requirements.txt
+      become: true
+
+    - block:
+        - block:
+            - name: Down etcd ips
+              shell: |
+                x=`echo "{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}"`
+                y=`echo "{{ server.stdout }}"`
+                z=$y'_hosts.ini'
+                var=`cat kubespray/inventory/$x/$z | grep "{{ item }}" | rev | cut -f1 -d '=' | rev | uniq`
+                echo $var
+              register: downipetcd
+              with_items:
+                - "{{ down_etcd }}"
+
+            - name: Delete old values
+              lineinfile:
+                path: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[0] }}_hosts.ini
+                regexp: '^{{ item[1] }}'
+                state: absent
+              with_nested:
+                - "{{ server.stdout }}"
+                - "{{ down_nodes }}"
+
+            - name: Launch down etcd instances
+              os_server:
+                image: "{{ lookup('env','OS_IMAGE_ID') }}"
+                name: "{{ item[0] }}"
+                key_name: "{{ item[1] }}"
+                availability_zone: "{{ lookup('env','OS_AZ') | default('nova') }}"
+                flavor: "{{ item[2] }}"
+                network: "{{ lookup('env','OS_NETWORK_ID') }}"
+                boot_from_volume: true
+                volume_size: 100
+                auto_ip: no
+                userdata: |
+                  {%- raw -%}#!/bin/bash
+                  sed -i 's/PermitRootLogin .*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+                  systemctl restart sshd
+                  systemctl stop firewalld
+                  systemctl disable firewalld
+                  sed -i 's/^.* ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys
+                  {% endraw %}
+              register: master
+              with_nested:
+                - "{{ down_etcd }}"
+                - "{{ key.stdout }}"
+                - "{{ etcdflavour.stdout }}"
+
+            - name: Update inventory file for etcd
+              ini_file:
+                path: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[2] }}_hosts.ini
+                section: "{{ item[0] }}"
+                option: "{{ item[1].server.name }}"
+                value: "ansible_host={{ item[1].server.private_v4 }}"
+              with_nested:
+                - [ 'all', 'kube-master', 'etcd', 'kube-node' ]
+                - "{{ master.results }}"
+                - "{{ server.stdout }}"
+
+            - name: Copy updated ini file to hosts
+              copy:
+                src: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item }}_hosts.ini
+                dest: /home/data/{{ ansible_date_time.date }}_{{ item }}_hosts.ini
+              with_items:
+                - "{{ server.stdout }}"
+
+            - name: Replace
+              replace:
+                path: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item }}_hosts.ini
+                regexp: ' = '
+                replace: ' '
+              with_items:
+                - "{{ server.stdout }}"
+
+            - name: Wait for etcd servers to come online
+              wait_for:
+                host: "{{ item.server.private_v4 }}"
+                port: 22
+                timeout: 400
+                state: started
+              with_items:
+                - "{{ master.results }}"
+
+            - name: Remove unhealthy etcd node
+              shell: ansible-playbook -i kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[1] }}_hosts.ini -l "{{ item[0] }}" -s --private-key ssh/{{ item[2] }} kubespray/remove-node.yml
+              become: true
+              ignore_errors: true
+              with_nested:
+                - "{{ down_etcd }}"
+                - "{{ server.stdout }}"
+                - "{{ key.stdout }}"
+
+            - name: Remove uhealthy etcd member
+              shell: |
+                host=`hostname`
+                id=`ETCDCTL_API=2 /usr/local/bin/etcdctl --endpoints https://127.0.0.1:2379 --cert-file /etc/ssl/etcd/ssl/member-$host.pem --key-file /etc/ssl/etcd/ssl/member-$host-key.pem --ca-file /etc/ssl/etcd/ssl/ca.pem member list | grep "{{ item[0] }}" | cut -f1 -d ':'`
+                echo $id
+                var_etcd=`sudo ETCDCTL_API=2 /usr/local/bin/etcdctl --endpoints https://127.0.0.1:2379 --cert-file /etc/ssl/etcd/ssl/member-$host.pem --key-file /etc/ssl/etcd/ssl/member-$host-key.pem --ca-file /etc/ssl/etcd/ssl/ca.pem member list | grep "{{ item[0] }}" | awk '{ print $2 }' | cut -f2 -d '='`
+                echo $var_etcd
+                ETCDCTL_API=2 /usr/local/bin/etcdctl --endpoints https://127.0.0.1:2379 --cert-file /etc/ssl/etcd/ssl/member-$host.pem --key-file /etc/ssl/etcd/ssl/member-$host-key.pem --ca-file /etc/ssl/etcd/ssl/ca.pem member remove $id
+                ETCDCTL_API=2 /usr/local/bin/etcdctl --endpoints https://127.0.0.1:2379 --cert-file /etc/ssl/etcd/ssl/member-$host.pem --key-file /etc/ssl/etcd/ssl/member-$host-key.pem --ca-file /etc/ssl/etcd/ssl/ca.pem member add $var_etcd https://{{ item[1].server.private_v4 }}:2380
+              become: true
+              delegate_to: "{{groups['etcd'][0]}}"
+              with_nested:
+                - "{{ downipetcd.results[0].stdout }}"
+                - "{{ master.results }}"
+
+            - name: Remove old files
+              shell: |
+                find /etc/ssl/etcd/ssl/ -type f -name "*{{ item }}*" -exec rm -f {} \;
+              become: true
+              delegate_to: "{{groups['etcd'][0]}}"
+              with_items:
+                - "{{ down_etcd }}"
+
+            - name: Autoscale kubernetes etcd node
+              shell: |
+                ansible-playbook -i kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[1] }}_hosts.ini -l "{{ item[0] }}" -s --private-key ssh/{{ item[2] }} kubespray/cluster.yml
+              with_nested:
+                - "{{ down_etcd }}"
+                - "{{ server.stdout }}"
+                - "{{ key.stdout }}"
+          when: down_etcd is defined and failetcd < quorum
+
+        - block:
+            - name: Launch down worker instances
+              os_server:
+                image: "{{ lookup('env','OS_IMAGE_ID') }}"
+                name: "{{ item[0] }}"
+                key_name: "{{ item[1] }}"
+                availability_zone: "{{ lookup('env','OS_AZ') | default('nova') }}"
+                flavor: "{{ lookup('env','OS_FLAVOR_NAME_CUST_WORKER') }}"
+                network: "{{ lookup('env','OS_NETWORK_ID') }}"
+                boot_from_volume: true
+                volume_size: 100
+                auto_ip: no
+                userdata: |
+                  {%- raw -%}#!/bin/bash
+                  sed -i 's/PermitRootLogin .*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+                  systemctl restart sshd
+                  systemctl stop firewalld
+                  systemctl disable firewalld
+                  sed -i 's/^.* ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys
+                  {% endraw %}
+              register: worker
+              with_nested:
+                - "{{ down_worker }}"
+                - "{{ key.stdout }}"
+
+            - name: Update inventory file for worker
+              ini_file:
+                path: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[2] }}_hosts.ini
+                section: "{{ item[0] }}"
+                option: "{{ item[1].server.name }}"
+                value: "ansible_host={{ item[1].server.private_v4 }}"
+              with_nested:
+                - [ 'all', 'kube-master', 'etcd', 'kube-node' ]
+                - "{{ worker.results }}"
+                - "{{ server.stdout }}"
+
+            - name: Replace
+              replace:
+                path: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item }}_hosts.ini
+                regexp: ' = '
+                replace: ' '
+              with_items:
+                - "{{ server.stdout }}"
+
+            - name: Copy updated ini file to hosts
+              copy:
+                src: kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item }}_hosts.ini
+                dest: /home/data/{{ ansible_date_time.date }}_{{ item }}_hosts.ini
+              with_items:
+                - "{{ server.stdout }}"
+
+            - name: Wait for non-etcd servers to come online
+              wait_for:
+                host: "{{ item.server.private_v4 }}"
+                port: 22
+                timeout: 400
+                state: started
+              with_items:
+                - "{{ worker.results }}"
+
+            - name: Remove unhealthy worker node
+              shell: ansible-playbook -i kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[1] }}_hosts.ini -l "{{ item[0] }}" -s --private-key ssh/{{ item[2] }} kubespray/remove-node.yml
+              become: true
+              ignore_errors: true
+              with_nested:
+                - "{{ down_worker }}"
+                - "{{ server.stdout }}"
+                - "{{ key.stdout }}"
+
+            - name: Autoscale kubernetes non-etcd node
+              shell: |
+                ansible-playbook -i kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/{{ item[1] }}_hosts.ini -l "{{ item[0] }}" -s --private-key ssh/{{ item[2] }} kubespray/cluster.yml
+              with_nested:
+                - "{{ down_worker }}"
+                - "{{ server.stdout }}"
+                - "{{ key.stdout }}"
+          when: down_worker is defined and down_worker != ['']
+      when: down_nodes is defined and down_nodes != ['']

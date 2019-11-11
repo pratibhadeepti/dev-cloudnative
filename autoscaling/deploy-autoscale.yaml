@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoscaling
+  namespace: default
+  labels:
+    app: autoscaling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoscaling
+  template:
+    metadata:
+      labels:
+        app: autoscaling
+    spec:
+      containers:
+      - name: autoscale
+        image: autoscaling:latest
+        imagePullPolicy: Never
+        resources:
+          limits:
+            cpu: 1000m
+          requests:
+            cpu: 100m
+        env:
+        - name: INI
+          valueFrom:
+            configMapKeyRef:
+              name: autoscale-map
+              key: ini
+        - name: TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: autoscale-map
+              key: type
+        - name: USER
+          valueFrom:
+            configMapKeyRef:
+              name: autoscale-map
+              key: user
+        ports:
+        - containerPort: 22
+        volumeMounts:
+        - mountPath: /home/data
+          name: data
+      volumes:
+      - name: data
+        hostPath:
+          path: /opt/cnva/infra/autoscale
+          type: Directory
+

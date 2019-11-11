@@ -1,0 +1,109 @@
+---
+- set_fact:
+         cloud: "{{ lookup('env','K8S_CLUSTER_NAME') }}"
+
+- name: Register number of instances
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_VALUE') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: no_inst
+
+- name: Check for cluster type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_INSTANCE_SUFFIX') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','SUB_INSTANCE_SUFFIX') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+- name: master ips list
+  shell: grep -A {{no_inst.stdout}}  "\[kube-master\]" ./{{ type.stdout }}_cluster/{{ lookup('env','K8S_CLUSTER_NAME') }}/{{ lookup('env','K8S_CLUSTER_NAME') }}_hosts.ini | \
+         awk '{print $2}'|cut -d '=' -f 2 |awk 'NR==2,  NR=="{{no_inst.stdout}}"+1  {print $1}'
+  register: master_ip_list
+- debug: var=master_ip_list.stdout_lines
+
+- set_fact:
+    subnet_id: "{{ lookup('env','SUBNET_ID') }}"
+
+- name: create lbaas
+  shell: neutron lbaas-loadbalancer-create --name {{ cloud }}-{{ type.stdout }}  {{subnet_id}} >lb_details.txt
+
+- name: find ip
+  shell: grep -irn "vip_address" lb_details.txt | awk '{print $4}'
+  register: ip
+
+
+- name: find vip_port_id
+  shell: grep -irn "vip_port_id" lb_details.txt | awk '{print $4}'
+  register: port
+
+- set_fact:
+    floating_nid: "{{ lookup('env','FLOATING_NETWORK_ID') }}"
+
+- name: Removing unbind floating ips if exist
+  shell: openstack  floating ip list >abc
+
+- shell: cat abc
+  register: st
+
+- shell: grep -irn "None" abc|awk '{print $2}' |xargs neutron floatingip-delete  $1
+  when: st.stdout.find('None') != -1
+
+- shell: openstack floating ip create {{floating_nid}} >new
+- shell: grep -irn " id " new|awk '{print $4}'
+  register: floating_ip_id
+
+- shell: neutron floatingip-associate {{floating_ip_id.stdout_lines[0]}} {{port.stdout_lines[0]}}
+
+- file:
+    path: "{{item}}"
+    state: absent
+  with_items:
+    - lb_details.txt
+    - new
+    - abc
+
+- name: create https listner
+  shell: neutron lbaas-listener-create --name {{ cloud }}-{{ type.stdout }}-https --loadbalancer {{ cloud }}-{{ type.stdout }} --protocol TCP --protocol-port 6443
+
+- name: create lbaas pool
+  shell: neutron lbaas-pool-create --name {{ cloud }}-{{ type.stdout }}-pool-https --lb-algorithm LEAST_CONNECTIONS --listener {{ cloud }}-{{ type.stdout }}-https --protocol TCP
+
+- name: add members of loadbalancer
+  shell: neutron lbaas-member-create --subnet {{subnet_id}} --address {{item}}  --protocol-port 6443  {{ cloud }}-{{ type.stdout }}-pool-https
+  with_items:
+     - "{{master_ip_list.stdout_lines}}"
+
+- name: create health
+  shell: neutron lbaas-healthmonitor-create --delay 5 --max-retries 3 --timeout 10 --type HTTPS --pool {{ cloud }}-{{ type.stdout }}-pool-https
+
+- name: Configure the LB IP and port in kubespray
+  replace:
+    path: "./kubespray/inventory/{{ lookup('env','K8S_CLUSTER_NAME') |default('cnva') }}/group_vars/all.yml"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.line }}"
+  with_items:
+    - {
+       regexp: '#.*apiserver_loadbalancer_domain_name:.*',
+       line: 'apiserver_loadbalancer_domain_name: "admin.cnva.com"'
+      }
+    - {
+       regexp: '#.*loadbalancer_apiserver:.*',
+       line: 'loadbalancer_apiserver:'
+      }
+    - {
+       regexp: '#  address:.*',
+       line: '  address: {{ip.stdout_lines[0]}}'
+      }
+    - {
+       regexp: '#  port:.*',
+       line: '  port: 6443'
+      }
+  become: true

@@ -1,0 +1,17 @@
+--- 
+- gather_facts: false
+  hosts: "kube-master[0]"
+  tasks:
+    - name: Unpack EFK Stack
+      unarchive:
+        src: ../files/efk.zip
+        dest: /opt/cnva/infra/efk
+
+    - name: Install EFK Stack - Elasticsearch
+      shell: "/usr/local/bin/helm install --name elasticsearch --namespace kube-logging --set data.persistence.storageClass=ssd,master.persistence.storageClass=ssd,data.persistence.size=100Gi,master.persistence.size=30Gi /opt/cnva/infra/efk/efk/elasticsearch"
+
+    - name: Install EFK Stack - Fluentd
+      shell: "/usr/local/bin/helm install --name fluentd --namespace kube-logging --set elasticsearch.host=elasticsearch-client,elasticsearch.port=9200 /opt/cnva/infra/efk/efk/fluentd-elasticsearch/"
+
+    - name: Install EFK Stack - Kibana
+      shell: "/usr/local/bin/helm install --name kibana --namespace kube-logging --set service.externalPort=80 --set env.ELASTICSEARCH_URL=http://elasticsearch-client:9200 /opt/cnva/infra/efk/efk/kibana/"

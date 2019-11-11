@@ -1,0 +1,6 @@
+---
+# vars file for createNodes
+ktype: "{{cluster_type}}"
+max_num_admin: "{{ lookup('env','ADMIN_INSTANCE_VALUE') }}"
+max_num_cust_master: "{{ lookup('env','NUM_SUB_MASTER') }}"
+max_num_cust_worker: "{{ lookup('env','NUM_SUB_WORKER') }}"

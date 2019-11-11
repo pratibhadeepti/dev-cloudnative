@@ -1,0 +1,45 @@
+---
+# tasks file for createKeys
+
+- name: Check for key type
+  shell: |
+    if [ {{ ktype }} == "Admin" ]; then
+        echo "{{ lookup('env','ADMIN_KEY_NAME') }}"
+    elif [ {{ ktype }} == "Sub" ]; then
+        echo "{{ lookup('env','CUST_KEY_NAME') }}"
+    fi
+  args:
+    executable: /bin/bash
+  register: type
+
+# Check if folder exists
+- name: Check if ssh key exists
+  stat:
+   path: "./ssh/{{ type.stdout }}"
+  register: stat_result
+
+# Create SSH folder
+- name: create ssh folder to generate ssh key
+  file:
+   path: ./ssh
+   state: directory
+  when: stat_result.stat.exists == False
+
+# Generate SSH keys
+- name: Generate ssh key
+  shell: ssh-keygen -q -t rsa -f ssh/"{{ type.stdout }}" -C "" -N ""
+  creates: "./ssh/{{ type.stdout }}"
+  when: stat_result.stat.exists == False
+
+# Check and delete for existing key pair
+- name: Delete key pair if exists
+  os_keypair:
+   name: "{{ type.stdout }}"
+   state: absent
+
+# Generate a new key pair
+- name: Generate pem file on openstack
+  os_keypair:
+   name: "{{ type.stdout }}"
+   state: present
+   public_key_file: "./ssh/{{ type.stdout }}.pub"

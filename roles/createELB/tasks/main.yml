@@ -1,0 +1,6 @@
+---
+#craete HA loadbalancer for admin cluster
+
+- import_tasks: create_lbaas.yml
+- import_tasks: create_listener.yml
+  when: ktype == 'Admin'

@@ -1,0 +1,13 @@
+---
+- shell: neutron lbaas-pool-show {{pool.id}} --format yaml
+  register: pl_data
+- set_fact:
+    pool_data: "{{pl_data.stdout| from_yaml}}"
+- shell: neutron lbaas-member-delete {{item}} {{pool_data.name}}
+  with_items:
+    - "{{pool_data.members}}"
+- shell: neutron lbaas-healthmonitor-delete {{pool_data.healthmonitor_id}}
+- shell: neutron lbaas-pool-delete {{pool_data.id}}
+- shell: neutron lbaas-listener-delete {{pool_data.listeners.id}}
+
+
